@@ -97,22 +97,20 @@ def run_benchmark(
         else:
             result.none_count += 1
 
-    # Estimate baseline: no-memory path is just LLM; we approximate with a fixed stub
-    # or caller-provided measurement.
-    estimated_baseline = baseline_no_memory_ms or 800.0
-    with_memory_avg = result.avg_latency_ms
-    token_savings_estimate = result.hit_rate * 0.65  # replay/restore skips full generation
-
-    comparison = {
-        "without_memory_avg_latency_ms": estimated_baseline,
-        "with_memory_avg_latency_ms": round(with_memory_avg, 2),
-        "latency_reduction_pct": round(
-            max(0.0, (1 - with_memory_avg / estimated_baseline) * 100) if estimated_baseline else 0.0,
-            1,
-        ),
-        "estimated_token_savings_pct": round(token_savings_estimate * 100, 1),
-        "memory_hit_pct": round(result.hit_rate * 100, 1),
-    }
+    # Only compare against a baseline the caller actually measured — we have
+    # no honest way to invent an LLM round-trip time.
+    comparison: dict = {"memory_hit_pct": round(result.hit_rate * 100, 1)}
+    if baseline_no_memory_ms:
+        with_memory_avg = result.avg_latency_ms
+        comparison.update(
+            {
+                "user_measured_baseline_ms": baseline_no_memory_ms,
+                "with_memory_avg_latency_ms": round(with_memory_avg, 2),
+                "latency_reduction_pct": round(
+                    max(0.0, (1 - with_memory_avg / baseline_no_memory_ms) * 100), 1
+                ),
+            }
+        )
 
     return result, comparison
 
@@ -128,13 +126,21 @@ def format_benchmark_report(result: BenchmarkResult, comparison: dict) -> str:
         f"Memory hit rate:   {result.hit_rate:.1%}",
         f"Avg latency:       {result.avg_latency_ms:.2f} ms",
         f"P95 latency:       {result.p95_latency_ms:.2f} ms",
-        "",
-        "Without memory vs Agent Memory",
-        "------------------------------",
-        f"Without memory:    {comparison['without_memory_avg_latency_ms']:.0f} ms (estimated)",
-        f"With agent-memory: {comparison['with_memory_avg_latency_ms']:.2f} ms",
-        f"Latency reduction: {comparison['latency_reduction_pct']:.1f}%",
-        f"Est. token savings:{comparison['estimated_token_savings_pct']:.1f}%",
-        f"Memory hit rate:   {comparison['memory_hit_pct']:.1f}%",
     ]
+    if "user_measured_baseline_ms" in comparison:
+        lines += [
+            "",
+            "Against your measured no-memory baseline",
+            "----------------------------------------",
+            f"Your baseline:     {comparison['user_measured_baseline_ms']:.0f} ms (user-supplied)",
+            f"With agent-memory: {comparison['with_memory_avg_latency_ms']:.2f} ms",
+            f"Latency reduction: {comparison['latency_reduction_pct']:.1f}% "
+            "(applies to replayed queries only)",
+        ]
+    else:
+        lines += [
+            "",
+            "Tip: pass --baseline-ms with your app's measured no-memory latency",
+            "to see the comparison. No synthetic baseline is assumed.",
+        ]
     return "\n".join(lines)

@@ -1,10 +1,74 @@
-# Benchmarks
+# Benchmarks & Evaluation
+
+All numbers below are reproducible from this repository — no synthetic
+baselines. Run them yourself:
 
 ```bash
-agent-memory benchmark --seed --repeat 10
-agent-memory eval
+agent-memory --data-dir /tmp/eval eval                      # decision quality
+agent-memory --data-dir /tmp/bench benchmark --seed --repeat 3   # latency & action mix
+python -m pytest tests/test_scale.py -v                     # correctness at scale
 ```
 
-Datasets live in `benchmarks/datasets/`.
+## Decision quality
 
-Metrics: replay rate, restore rate, hit rate, latency, precision.
+The eval suite covers 25 cases across 4 datasets, including **adversarial
+trap cases** — queries that share a word with a stored memory but ask a
+different question, which naive retrieve-and-inject systems answer wrongly.
+
+| Dataset | Cases | What it tests |
+|---|---|---|
+| `customer_support` | 4 | FAQ replay, paraphrase restore, unrelated → none |
+| `coding_agent` | 4 | Workflow replay/restore, fact verification |
+| `research_agent` | 4 | Summary replay, cross-document restore |
+| `decision_traps` | 13 | Shared-word traps, `requires_verification` facts, paraphrases |
+
+Results (measured 2026-09, v0.2 dev):
+
+| Backend | Precision |
+|---|---|
+| SQLite, lexical (FTS5 + BM25 + coverage) | **25/25 (100%)** |
+| SQLite + `semantic` extra (sqlite-vec + fastembed) | **25/25 (100%)** |
+
+Scoring: an expected `restore` also accepts `replay`/`verify` (all three
+surface the memory; verify is simply more cautious). The hard boundaries —
+replaying the *wrong* answer, or using memory when `none` was expected —
+are never accepted.
+
+Example trap case that must return `none`:
+
+> Stored: "What payment methods do you **support**?" → "Visa, Mastercard, PayPal."
+> Query: "Does the platform **support** two-factor authentication?"
+> Expected: `none` (a naive top-1 retriever replays the payment answer)
+
+## Latency
+
+Measured on an M-series MacBook (single process, local SQLite file).
+CI runners will be slower; `tests/test_scale.py` enforces a generous
+regression bound instead of these exact numbers.
+
+| Configuration | Corpus size | resolve() avg | resolve() p95 |
+|---|---|---|---|
+| SQLite lexical (FTS5) | 5,000 memories | 12 ms | 13 ms |
+| SQLite + semantic (sqlite-vec, 384-dim) | 1,000 memories | 12 ms | 19 ms |
+
+Writes: ~1 ms/memory lexical, ~8 ms/memory with embedding (single-item
+batches; bulk import via the embedder's native batching is faster).
+
+Before v0.2, keyword search loaded up to 10,000 rows and rebuilt a Python
+BM25 index on **every query** — roughly 1s per resolve at 5,000 memories.
+The FTS5 index removed that. `stats()` and `cleanup()` are pure SQL
+aggregates with no row cap.
+
+## What we do NOT claim
+
+- No comparison against a hardcoded "LLM baseline". If you pass
+  `--baseline-ms` with a latency you measured in your own app, the benchmark
+  will compare against that, clearly labeled as user-supplied.
+- Token-savings depend entirely on your hit rate and prompt sizes; measure
+  them in your own pipeline.
+
+## Roadmap for external benchmarks
+
+Planned: LongMemEval / LoCoMo harness so results are comparable with other
+memory systems (mem0, Zep). Contributions welcome — see
+[CONTRIBUTING.md](../CONTRIBUTING.md).

@@ -8,6 +8,35 @@ description = "Persistent semantic memory for AI agents with replay, restore, ve
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
+authors = [{ name = "TheProdSDE", email = "theprodsde@gmail.com" }]
+keywords = [
+    "ai-agents",
+    "memory",
+    "llm",
+    "rag",
+    "retrieval",
+    "mcp",
+    "semantic-search",
+    "agent-memory",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+[project.urls]
+Homepage = "https://github.com/TheProdSDE/agent-memory-sdk"
+Repository = "https://github.com/TheProdSDE/agent-memory-sdk"
+Issues = "https://github.com/TheProdSDE/agent-memory-sdk/issues"
+Changelog = "https://github.com/TheProdSDE/agent-memory-sdk/blob/main/CHANGELOG.md"
 dependencies = [
     "mcp>=1.0.0",
     "pydantic>=2.0.0",
@@ -17,6 +46,10 @@ dependencies = [
 dynamic = ["version"]
 
 [project.optional-dependencies]
+semantic = [
+    "sqlite-vec>=0.1.6",
+    "fastembed>=0.3.0",
+]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.24.0",
@@ -56,3 +89,16 @@ python_version = "3.10"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
+
+[[tool.mypy.overrides]]
+# Third-party libraries without stubs (or with stubs that need newer Python).
+module = [
+    "chromadb.*",
+    "rank_bm25.*",
+    "sqlite_vec.*",
+    "fastembed.*",
+    "sentence_transformers.*",
+    "mcp.*",
+]
+ignore_missing_imports = true
+follow_imports = "skip"

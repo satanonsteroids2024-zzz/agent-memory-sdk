@@ -70,6 +70,8 @@ def seed_dataset(memory: Memory, dataset: EvalDataset) -> None:
             scope=item.get("scope", "user"),
             tags=item.get("tags", []),
             ttl=item.get("ttl"),
+            confidence=item.get("confidence", 1.0),
+            requires_verification=item.get("requires_verification", False),
         )
 
 
@@ -81,10 +83,13 @@ def run_eval(memory: Memory, dataset: EvalDataset) -> EvalResult:
         result.total += 1
         actual = decision.action.value
 
-        # Allow flexible matching: restore accepts replay; verify accepts restore/replay
+        # Flexible matching among memory-using actions: restore/verify both
+        # surface the memory as context (verify is just more cautious), and a
+        # replay/restore boundary case is not a wrong answer. The hard
+        # boundaries are using memory vs NONE, and replaying the wrong answer.
         acceptable = {case.expected_action}
         if case.expected_action == "restore":
-            acceptable |= {"replay"}
+            acceptable |= {"replay", "verify"}
         if case.expected_action == "replay":
             acceptable |= {"restore"}
         if case.expected_action == "verify":

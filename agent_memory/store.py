@@ -17,6 +17,93 @@ def _tokenize(text: str) -> list[str]:
     return re.findall(r"\w+", text.lower())
 
 
+# High-frequency English function words excluded from coverage scoring.
+STOP_WORDS: frozenset[str] = frozenset({
+    "a", "about", "after", "again", "against", "an", "and", "any", "are", "as", "at",
+    "be", "been", "being", "before", "between", "but", "by",
+    "can", "could", "did", "do", "does", "down", "during",
+    "for", "from", "get", "had", "has", "have", "he", "her", "hers", "him", "his",
+    "how", "i", "if", "in", "into", "is", "it", "its", "just",
+    "may", "me", "might", "mine", "must", "my",
+    "no", "not", "now", "of", "on", "or", "our", "ours", "out", "over",
+    "s", "she", "should", "so", "some", "such",
+    "t", "than", "that", "the", "their", "theirs", "them", "then", "these", "they",
+    "this", "those", "through", "to", "under", "up", "us",
+    "was", "we", "were", "what", "when", "where", "which", "while", "who", "whom",
+    "whose", "why", "will", "with", "without", "would",
+    "you", "your", "yours",
+})
+
+
+def _normalize_token(token: str) -> str:
+    # Cheap plural folding so "tests" matches "test".
+    if len(token) > 3 and token.endswith("s") and not token.endswith("ss"):
+        return token[:-1]
+    return token
+
+
+def _content_tokens(text: str) -> set[str]:
+    tokens = {_normalize_token(t) for t in _tokenize(text) if t not in STOP_WORDS}
+    return tokens
+
+
+def query_coverage(query: str, document: str) -> float:
+    """Fraction of the query's content words that appear in the document."""
+    query_tokens = _content_tokens(query)
+    if not query_tokens:
+        query_tokens = {_normalize_token(t) for t in _tokenize(query)}
+    if not query_tokens:
+        return 0.0
+    doc_tokens = _content_tokens(document) | {_normalize_token(t) for t in _tokenize(document)}
+    return len(query_tokens & doc_tokens) / len(query_tokens)
+
+
+def bm25_scores(
+    query: str,
+    entries: list[MemoryEntry],
+    documents: list[str],
+    top_k: int,
+) -> list[tuple[MemoryEntry, float]]:
+    """Rank entries by BM25, scaled by query-term coverage.
+
+    Raw BM25 scores are relative to the corpus, so normalizing by the max
+    would always give the best hit a perfect 1.0 — even when it shares a
+    single word with the query. Scaling by coverage keeps exact matches near
+    1.0 while weak overlaps score low enough that the decision layer skips them.
+    """
+    from rank_bm25 import BM25Okapi
+
+    corpus = [_tokenize(doc) for doc in documents]
+    bm25 = BM25Okapi(corpus)
+    scores = bm25.get_scores(_tokenize(query))
+    max_score = max(scores) if len(scores) else 0.0
+    if max_score <= 0:
+        # BM25 degenerates on tiny corpora (IDF <= 0); rank by coverage alone,
+        # mapped through the same 0.5 + 0.5*coverage transform as below.
+        ranked_cov = sorted(
+            ((entry, query_coverage(query, doc)) for entry, doc in zip(entries, documents)),
+            key=lambda pair: pair[1],
+            reverse=True,
+        )[:top_k]
+        return [(entry, 0.5 + 0.5 * cov) for entry, cov in ranked_cov if cov > 0]
+
+    ranked = sorted(
+        zip(entries, documents, scores),
+        key=lambda item: item[2],
+        reverse=True,
+    )[: top_k * 2]
+
+    results: list[tuple[MemoryEntry, float]] = []
+    for entry, doc, score in ranked:
+        if score <= 0:
+            continue
+        coverage = query_coverage(query, doc)
+        normalized = float(score / max_score)
+        results.append((entry, normalized * (0.5 + 0.5 * coverage)))
+    results.sort(key=lambda pair: pair[1], reverse=True)
+    return results[:top_k]
+
+
 class MemoryStore(ABC):
     """Abstract base class for memory storage backends.
     This defines the common interface that all memory store implementations
@@ -91,6 +178,51 @@ class MemoryStore(ABC):
         """Return the total number of stored memories."""
         ...
 
+    def stats(self) -> dict[str, Any]:
+        """Aggregate memory statistics.
+
+        Default implementation loads entries into Python; backends with a
+        query engine (e.g. SQLite) override this with real aggregates.
+        """
+        entries = self.list_all(limit=1_000_000, include_archived=True, include_expired=True)
+        by_state: dict[str, int] = {}
+        by_type: dict[str, int] = {}
+        total_access = 0
+        for entry in entries:
+            entry.refresh_state()
+            by_state[entry.state.value] = by_state.get(entry.state.value, 0) + 1
+            by_type[entry.type.value] = by_type.get(entry.type.value, 0) + 1
+            total_access += entry.access_count
+        return {
+            "total": len(entries),
+            "by_state": by_state,
+            "by_type": by_type,
+            "total_access_count": total_access,
+        }
+
+    def cleanup_expired(self, *, delete: bool = False) -> dict[str, int]:
+        """Mark expired memories as expired, optionally deleting them.
+
+        Returns counts: {"expired": N, "deleted": M}. Default implementation
+        loads entries into Python; backends with a query engine override it.
+        """
+        entries = self.list_all(limit=1_000_000, include_archived=True, include_expired=True)
+        expired_count = 0
+        deleted_count = 0
+        for entry in entries:
+            entry.refresh_state()
+            if not entry.is_expired:
+                continue
+            if delete:
+                if self.delete(entry.id):
+                    deleted_count += 1
+            else:
+                if entry.state != MemoryState.EXPIRED:
+                    entry.state = MemoryState.EXPIRED
+                    self.update(entry)
+                expired_count += 1
+        return {"expired": expired_count, "deleted": deleted_count}
+
 
 class ChromaDBStore(MemoryStore):
     """ChromaDB-backed persistent memory storage with scope filtering."""
@@ -114,10 +246,9 @@ class ChromaDBStore(MemoryStore):
 
     @property
     def count(self) -> int:
-        return self._collection.count()
+        return int(self._collection.count())
 
     def store(self, entry: MemoryEntry) -> MemoryEntry:
-        entry.updated_at = datetime.now(timezone.utc)
         entry.refresh_state()
         self._collection.upsert(
             ids=[entry.id],
@@ -229,8 +360,6 @@ class ChromaDBStore(MemoryStore):
         include_archived: bool = False,
         include_expired: bool = False,
     ) -> list[tuple[MemoryEntry, float]]:
-        from rank_bm25 import BM25Okapi
-
         entries = self.list_all(
             limit=10_000,
             scopes=scopes,
@@ -240,20 +369,8 @@ class ChromaDBStore(MemoryStore):
         if not entries:
             return []
 
-        corpus = [_tokenize(self._search_document(e)) for e in entries]
-        bm25 = BM25Okapi(corpus)
-        scores = bm25.get_scores(_tokenize(query))
-        max_score = max(scores) if len(scores) else 1.0
-        if max_score <= 0:
-            return []
-
-        ranked = sorted(
-            zip(entries, scores),
-            key=lambda pair: pair[1],
-            reverse=True,
-        )[:top_k]
-
-        return [(entry, float(score / max_score)) for entry, score in ranked if score > 0]
+        documents = [self._search_document(e) for e in entries]
+        return bm25_scores(query, entries, documents, top_k)
 
     @staticmethod
     def _search_document(entry: MemoryEntry) -> str:
@@ -289,6 +406,7 @@ class ChromaDBStore(MemoryStore):
 
     def _entry_to_metadata(self, entry: MemoryEntry) -> dict[str, Any]:
         return {
+            "query": entry.query,
             "response": entry.response,
             "content": entry.content,
             "type": entry.type.value,
@@ -309,7 +427,9 @@ class ChromaDBStore(MemoryStore):
     def _metadata_to_entry(self, memory_id: str, document: str, metadata: dict[str, Any]) -> MemoryEntry:
         last_accessed = metadata.get("last_accessed_at") or None
         expires_raw = metadata.get("expires_at") or None
-        query = document.split("\n", 1)[0] if document else ""
+        # Entries written before v0.1.5 lack the query in metadata; recover it
+        # from the search document's first line.
+        query = metadata.get("query") or (document.split("\n", 1)[0] if document else "")
         entry = MemoryEntry(
             id=memory_id,
             query=query,

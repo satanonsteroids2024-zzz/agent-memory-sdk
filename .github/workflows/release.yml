@@ -18,10 +18,10 @@ jobs:
 
     steps:
       - name: Checkout
-        run: |
-          git clone --depth 1 ${{ github.server_url }}/${{ github.repository }} .
-          git fetch origin ${{ github.sha }}
-          git checkout ${{ github.sha }}
+        uses: actions/checkout@v4
+        with:
+          # Full history so hatch-vcs can resolve the version from tags.
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5.5.0

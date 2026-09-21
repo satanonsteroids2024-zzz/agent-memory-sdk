@@ -77,8 +77,12 @@ class DecisionEngine:
 
         if action == MemoryAction.REPLAY:
             return self._finalize_replay(query, results[0], reason)
-        if action == MemoryAction.VERIFY and enable_verify:
-            return self._finalize_verify(query, results[0], reason)
+        if action == MemoryAction.VERIFY:
+            if enable_verify:
+                return self._finalize_verify(query, results[0], reason)
+            # Verification disabled: degrade to context injection, not NONE.
+            action = MemoryAction.RESTORE
+            reason = "Verification disabled — restoring memory as context instead."
         if action == MemoryAction.RESTORE:
             return MemoryDecision(
                 action=MemoryAction.RESTORE,

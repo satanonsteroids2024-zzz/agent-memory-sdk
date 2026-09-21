@@ -146,7 +146,12 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark.add_argument("queries", nargs="*", help="Queries to benchmark")
     benchmark.add_argument("--seed", action="store_true", help="Seed from eval datasets first")
     benchmark.add_argument("--repeat", type=int, default=1, help="Repeat each query N times")
-    benchmark.add_argument("--baseline-ms", type=float, default=800.0, help="No-memory baseline ms")
+    benchmark.add_argument(
+        "--baseline-ms",
+        type=float,
+        default=None,
+        help="Your measured no-memory latency in ms (enables the comparison section)",
+    )
     add_common_args(benchmark)
     benchmark.set_defaults(func=cmd_benchmark)
 

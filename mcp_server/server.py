@@ -6,12 +6,13 @@ import json
 import os
 from pathlib import Path
 
-from mcp.server.fastmcp import FastMCP
+try:
+    # mcp >= 2.0 renamed FastMCP to MCPServer
+    from mcp.server.mcpserver import MCPServer as FastMCP
+except ImportError:
+    from mcp.server.fastmcp import FastMCP  # mcp 1.x
 
 from agent_memory import Memory, MemoryAction
-
-PERSIST_DIR = os.environ.get("AGENT_MEMORY_DIR", str(Path.home() / ".agent_memory"))
-COLLECTION = os.environ.get("AGENT_MEMORY_COLLECTION", "agent_memories")
 
 mcp = FastMCP("agent-memory")
 _memory: Memory | None = None
@@ -20,8 +21,18 @@ _memory: Memory | None = None
 def get_memory() -> Memory:
     global _memory
     if _memory is None:
-        _memory = Memory(persist_dir=PERSIST_DIR, collection_name=COLLECTION)
+        # Environment is read lazily so tests (and long-lived hosts) can
+        # repoint AGENT_MEMORY_DIR and call reset_memory().
+        persist_dir = os.environ.get("AGENT_MEMORY_DIR", str(Path.home() / ".agent_memory"))
+        collection = os.environ.get("AGENT_MEMORY_COLLECTION", "agent_memories")
+        _memory = Memory(persist_dir=persist_dir, collection_name=collection)
     return _memory
+
+
+def reset_memory() -> None:
+    """Drop the cached Memory instance (used by tests and config reloads)."""
+    global _memory
+    _memory = None
 
 
 @mcp.tool()
@@ -34,8 +45,12 @@ def remember_memory(
     scope: str = "user",
     confidence: float = 1.0,
     requires_verification: bool = False,
+    ttl: str | None = None,
 ) -> str:
-    """Store a query/response pair in persistent agent memory."""
+    """Store a query/response pair in persistent agent memory.
+
+    ttl accepts formats like "30d", "24h", "60m", "3600s".
+    """
     memory = get_memory()
     metadata = json.loads(metadata_json) if metadata_json else {}
     entry = memory.remember(
@@ -47,6 +62,7 @@ def remember_memory(
         scope=scope,
         confidence=confidence,
         requires_verification=requires_verification,
+        ttl=ttl,
     )
     return json.dumps(entry.to_dict(), indent=2)
 

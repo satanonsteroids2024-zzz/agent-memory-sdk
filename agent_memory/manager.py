@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import builtins
 from pathlib import Path
 
 from agent_memory.decision import DecisionEngine
-from agent_memory.models import MemoryDecision, MemoryEntry, MemoryScope, MemoryState, MemoryType
+from agent_memory.models import MemoryDecision, MemoryEntry, MemoryScope, MemoryType
 from agent_memory.policy import DecisionPolicy, DefaultPolicy
 from agent_memory.retriever import MemoryRetriever
 from agent_memory.sqlite_store import SqliteMemoryStore
@@ -24,10 +25,17 @@ class Memory:
         restore_threshold: float = 0.70,
         verify_threshold: float = 0.80,
         backend: str = "sqlite",  # "chromadb" or "sqlite"
+        embedder: object | None = None,
+        enable_embeddings: bool | str = "auto",
     ) -> None:
         self.store: MemoryStore
         if backend == "sqlite":
-            self.store = SqliteMemoryStore(persist_dir=persist_dir, collection_name=collection_name)
+            self.store = SqliteMemoryStore(
+                persist_dir=persist_dir,
+                collection_name=collection_name,
+                embedder=embedder,  # type: ignore[arg-type]
+                enable_embeddings=enable_embeddings,
+            )
         elif backend == "chromadb":
             self.store = ChromaDBStore(persist_dir=persist_dir, collection_name=collection_name)
         else:
@@ -165,10 +173,10 @@ class Memory:
         limit: int = 100,
         offset: int = 0,
         *,
-        scope: list[MemoryScope | str] | None = None,
+        scope: builtins.list[MemoryScope | str] | None = None,
         include_archived: bool = False,
         type: MemoryType | str | None = None,
-    ) -> list[MemoryEntry]:
+    ) -> builtins.list[MemoryEntry]:
         """Async version of list()."""
         return await asyncio.to_thread(
             self.list,
@@ -211,24 +219,7 @@ class Memory:
 
         Returns counts: {"expired": N, "deleted": M}
         """
-        entries = self.store.list_all(limit=10_000, include_archived=True, include_expired=True)
-        expired_count = 0
-        deleted_count = 0
-
-        for entry in entries:
-            entry.refresh_state()
-            if not entry.is_expired:
-                continue
-            if delete:
-                if self.store.delete(entry.id):
-                    deleted_count += 1
-            else:
-                if entry.state != MemoryState.EXPIRED:
-                    entry.state = MemoryState.EXPIRED
-                    self.store.update(entry)
-                expired_count += 1
-
-        return {"expired": expired_count, "deleted": deleted_count}
+        return self.store.cleanup_expired(delete=delete)
 
     async def acleanup(self, *, delete: bool = False) -> dict[str, int]:
         """Async version of cleanup()."""
@@ -236,29 +227,13 @@ class Memory:
 
     def stats(self) -> dict:
         """Return aggregate memory and usage statistics."""
-        entries = self.store.list_all(limit=10_000, include_archived=True, include_expired=True)
-        by_state: dict[str, int] = {}
-        by_type: dict[str, int] = {}
-        total_access = 0
-
-        for entry in entries:
-            entry.refresh_state()
-            by_state[entry.state.value] = by_state.get(entry.state.value, 0) + 1
-            by_type[entry.type.value] = by_type.get(entry.type.value, 0) + 1
-            total_access += entry.access_count
-
-        return {
-            "total": len(entries),
-            "by_state": by_state,
-            "by_type": by_type,
-            "total_access_count": total_access,
-        }
+        return self.store.stats()
 
     async def astats(self) -> dict:
         """Async version of stats()."""
         return await asyncio.to_thread(self.stats)
 
-    def consolidate(self, similarity_threshold: float = 0.95) -> list[MemoryEntry]:
+    def consolidate(self, similarity_threshold: float = 0.95) -> builtins.list[MemoryEntry]:
         """
         Merge near-duplicate active memories into summary entries.
         Returns newly created summary memories.
@@ -267,21 +242,23 @@ class Memory:
         created: list[MemoryEntry] = []
         seen: set[str] = set()
 
+        by_id = {entry.id: entry for entry in entries}
         for entry in entries:
             if entry.id in seen or entry.archived or entry.type == MemoryType.SUMMARY:
                 continue
 
+            # One search per entry (not per pair): near-duplicates of this
+            # entry's query are its top search hits by construction.
             duplicates = [entry]
-            for other in entries:
-                if other.id == entry.id or other.id in seen or other.archived:
+            hits = self.store.search(entry.query, top_k=10)
+            for hit, score in hits:
+                other = by_id.get(hit.id)
+                if other is None or other.id == entry.id or other.id in seen:
                     continue
-                if entry.type != other.type or entry.scope != other.scope:
+                if other.archived or other.type != entry.type or other.scope != entry.scope:
                     continue
-                hits = self.store.search(entry.query, top_k=5)
-                for hit, score in hits:
-                    if hit.id == other.id and score >= similarity_threshold:
-                        duplicates.append(other)
-                        break
+                if score >= similarity_threshold:
+                    duplicates.append(other)
 
             if len(duplicates) < 2:
                 continue
@@ -306,7 +283,7 @@ class Memory:
 
         return created
 
-    async def aconsolidate(self, similarity_threshold: float = 0.95) -> list[MemoryEntry]:
+    async def aconsolidate(self, similarity_threshold: float = 0.95) -> builtins.list[MemoryEntry]:
         """Async version of consolidate()."""
         return await asyncio.to_thread(self.consolidate, similarity_threshold=similarity_threshold)
 
@@ -341,7 +318,7 @@ class Memory:
         )
 
     # Backward compatibility
-    def list_memories(self, limit: int = 100, offset: int = 0) -> list[MemoryEntry]:
+    def list_memories(self, limit: int = 100, offset: int = 0) -> builtins.list[MemoryEntry]:
         return self.list(limit=limit, offset=offset)
 
 

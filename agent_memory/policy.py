@@ -57,7 +57,13 @@ class DefaultPolicy(DecisionPolicy):
         return self.score_breakdown(entry, semantic, keyword)["policy_score"]
 
     def score_breakdown(self, entry: MemoryEntry, semantic: float, keyword: float) -> dict[str, float]:
-        hybrid_semantic = 0.7 * semantic + 0.3 * keyword
+        # Let the stronger retrieval channel dominate: embeddings score
+        # paraphrases conservatively, keyword coverage scores them lexically —
+        # solid evidence from either channel should carry the match.
+        hybrid_semantic = max(
+            0.7 * semantic + 0.3 * keyword,
+            0.7 * keyword + 0.3 * semantic,
+        )
         recency = self._recency_score(entry.updated_at)
         usage = min(entry.access_count, self.usage_cap) / self.usage_cap
         confidence = entry.confidence
@@ -67,7 +73,6 @@ class DefaultPolicy(DecisionPolicy):
             + self.confidence_weight * confidence
             + self.usage_weight * usage
         )
-        decision_score = max(policy_score, max(semantic, 0.7 * semantic + 0.3 * keyword))
         return {
             "semantic_score": hybrid_semantic,
             "keyword_score": keyword,
@@ -75,7 +80,7 @@ class DefaultPolicy(DecisionPolicy):
             "confidence_score": confidence,
             "usage_score": usage,
             "policy_score": policy_score,
-            "final_score": decision_score,
+            "final_score": policy_score,
         }
 
     def select_action(
@@ -89,6 +94,15 @@ class DefaultPolicy(DecisionPolicy):
         best = results[0]
         score = best.decision_score
         entry = best.entry
+
+        # An explicit requires_verification flag outranks replay: the caller
+        # marked this memory as needing validation before any reuse.
+        if entry.requires_verification and score >= restore_threshold:
+            return (
+                MemoryAction.VERIFY,
+                score,
+                "Memory is flagged requires_verification — validate before reuse.",
+            )
 
         if score >= replay_threshold:
             return (

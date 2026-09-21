@@ -95,9 +95,10 @@ class MemoryEntry(BaseModel):
         return self
 
     def touch(self) -> None:
+        # Deliberately leaves updated_at alone: replaying a memory must not
+        # make it look fresher, or stale facts would never trigger VERIFY.
         self.access_count += 1
         self.last_accessed_at = datetime.now(timezone.utc)
-        self.updated_at = datetime.now(timezone.utc)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -135,9 +136,15 @@ class RetrievalResult(BaseModel):
 
     @property
     def decision_score(self) -> float:
-        """Score used for action thresholds — never below raw retrieval signals."""
-        retrieval = max(self.semantic_score, 0.7 * self.semantic_score + 0.3 * self.keyword_score)
-        return max(self.final_score, retrieval)
+        """Score used for action thresholds.
+
+        Uses the policy-weighted final score so that confidence, recency, and
+        usage can lower the score below the raw retrieval signal. Falls back to
+        the raw retrieval signal only when no policy score was computed.
+        """
+        if self.final_score > 0.0:
+            return self.final_score
+        return max(self.semantic_score, 0.7 * self.semantic_score + 0.3 * self.keyword_score)
 
 
 class MemoryDecision(BaseModel):

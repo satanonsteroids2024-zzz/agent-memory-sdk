@@ -1,35 +1,66 @@
 from __future__ import annotations
 
 import json
-import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from agent_memory.embeddings import Embedder, embedding_dimension, get_default_embedder
 from agent_memory.models import MemoryEntry, MemoryScope, MemoryState, MemoryType
-from agent_memory.store import MemoryStore
-
-
-def _tokenize(text: str) -> list[str]:
-    return re.findall(r"\w+", text.lower())
+from agent_memory.store import MemoryStore, _tokenize, bm25_scores, query_coverage
 
 
 class SqliteMemoryStore(MemoryStore):
-    """SQLite-backed persistent memory storage with scope filtering and BM25 keyword search."""
+    """SQLite-backed persistent memory storage.
+
+    Keyword search uses an FTS5 index with SQLite's built-in BM25 ranking, so
+    queries don't load the table into Python. With the ``semantic`` extra
+    installed (sqlite-vec + an embedding model), ``search()`` becomes true
+    vector search; otherwise it falls back to the lexical index.
+    """
 
     def __init__(
         self,
         persist_dir: str | Path = ".agent_memory",
         collection_name: str = "agent_memories",
+        embedder: Embedder | None = None,
+        enable_embeddings: bool | str = "auto",
     ) -> None:
         self.persist_dir = Path(persist_dir)
         self.persist_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = self.persist_dir / f"{collection_name}.db"
+        self._fts_enabled = False
+        self._vec_enabled = False
+        self._embedder: Embedder | None = None
+        self._vec_dim = 0
         self._init_db()
+        if enable_embeddings is True or enable_embeddings == "auto":
+            self._init_embeddings(embedder, required=enable_embeddings is True)
+
+    def _connect(self) -> sqlite3.Connection:
+        # timeout retries on SQLITE_BUSY so concurrent writers (MCP server,
+        # CLI, app code sharing one DB file) don't immediately fail.
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
+        conn.execute("PRAGMA foreign_keys = ON")
+        if self._vec_enabled:
+            self._load_vec_extension(conn)
+        return conn
+
+    # ------------------------------------------------------------------
+    # Schema
+    # ------------------------------------------------------------------
 
     def _init_db(self) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
+            # WAL is persistent in the DB file, so it only needs to be set
+            # once. Switching modes needs a brief exclusive lock, which can
+            # fail when several processes initialize the same DB at once —
+            # whichever one wins has set it, so the losers can move on.
+            try:
+                conn.execute("PRAGMA journal_mode = WAL")
+            except sqlite3.OperationalError:
+                pass
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS memories (
                     id TEXT PRIMARY KEY,
@@ -50,40 +81,163 @@ class SqliteMemoryStore(MemoryStore):
                     expires_at TEXT
                 )
             """)
-            conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories(scope)
-            """)
-            conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(type)
-            """)
-            conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_memories_archived ON memories(archived)
-            """)
-            conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_memories_state ON memories(state)
-            """)
-            conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_memories_expires_at ON memories(expires_at)
-            """)
+            for index_sql in (
+                "CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories(scope)",
+                "CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(type)",
+                "CREATE INDEX IF NOT EXISTS idx_memories_archived ON memories(archived)",
+                "CREATE INDEX IF NOT EXISTS idx_memories_state ON memories(state)",
+                "CREATE INDEX IF NOT EXISTS idx_memories_expires_at ON memories(expires_at)",
+            ):
+                conn.execute(index_sql)
+            self._init_fts(conn)
             conn.commit()
+
+    def _init_fts(self, conn: sqlite3.Connection) -> None:
+        try:
+            conn.execute(
+                "CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(search_text)"
+            )
+        except sqlite3.OperationalError:
+            # SQLite built without FTS5; keyword search falls back to Python BM25.
+            self._fts_enabled = False
+            return
+        self._fts_enabled = True
+        # Backfill for databases created before the FTS index existed (or
+        # written by an older version of this library).
+        memories_count = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+        fts_count = conn.execute("SELECT COUNT(*) FROM memories_fts").fetchone()[0]
+        if fts_count != memories_count:
+            conn.execute("DELETE FROM memories_fts")
+            conn.execute(
+                """
+                INSERT INTO memories_fts(rowid, search_text)
+                SELECT rowid, query || char(10) || content || char(10) || tags
+                FROM memories
+                """
+            )
+
+    # ------------------------------------------------------------------
+    # Optional vector search (sqlite-vec + embedding model)
+    # ------------------------------------------------------------------
+
+    def _init_embeddings(self, embedder: Embedder | None, *, required: bool) -> None:
+        try:
+            import sqlite_vec  # noqa: F401
+        except ImportError:
+            if required:
+                raise ImportError(
+                    "enable_embeddings=True requires sqlite-vec. "
+                    "Install with: pip install agent-memory-sdk[semantic]"
+                ) from None
+            return
+
+        resolved = embedder or get_default_embedder()
+        if resolved is None:
+            if required:
+                raise ImportError(
+                    "enable_embeddings=True requires an embedding model. "
+                    "Install with: pip install agent-memory-sdk[semantic]"
+                )
+            return
+
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
+        try:
+            if not self._load_vec_extension(conn):
+                if required:
+                    raise RuntimeError(
+                        "This Python's sqlite3 cannot load extensions, "
+                        "so sqlite-vec is unavailable."
+                    )
+                return
+            self._embedder = resolved
+            self._vec_dim = embedding_dimension(resolved)
+            conn.execute(
+                f"""
+                CREATE VIRTUAL TABLE IF NOT EXISTS memories_vec USING vec0(
+                    embedding float[{self._vec_dim}] distance_metric=cosine
+                )
+                """
+            )
+            self._vec_enabled = True
+            self._backfill_vectors(conn)
+            conn.commit()
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _load_vec_extension(conn: sqlite3.Connection) -> bool:
+        try:
+            import sqlite_vec
+
+            conn.enable_load_extension(True)
+            sqlite_vec.load(conn)
+            conn.enable_load_extension(False)
+            return True
+        except (ImportError, AttributeError, sqlite3.OperationalError):
+            return False
+
+    def _backfill_vectors(self, conn: sqlite3.Connection) -> None:
+        rows = conn.execute(
+            """
+            SELECT m.rowid, m.query, m.content, m.tags FROM memories m
+            WHERE m.rowid NOT IN (SELECT rowid FROM memories_vec)
+            """
+        ).fetchall()
+        if not rows or self._embedder is None:
+            return
+        import sqlite_vec
+
+        texts = [f"{q}\n{c}\n{t}" for _, q, c, t in rows]
+        vectors = self._embedder(texts)
+        for (rowid, *_), vector in zip(rows, vectors):
+            conn.execute(
+                "INSERT INTO memories_vec(rowid, embedding) VALUES (?, ?)",
+                (rowid, sqlite_vec.serialize_float32(vector)),
+            )
+
+    @property
+    def semantic_search_enabled(self) -> bool:
+        """True when search() uses real embeddings instead of lexical ranking."""
+        return self._vec_enabled
+
+    # ------------------------------------------------------------------
+    # CRUD
+    # ------------------------------------------------------------------
 
     @property
     def count(self) -> int:
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.execute("SELECT COUNT(*) FROM memories")
-            return cursor.fetchone()[0]
+            return int(cursor.fetchone()[0])
 
     def store(self, entry: MemoryEntry) -> MemoryEntry:
-        entry.updated_at = datetime.now(timezone.utc)
         entry.refresh_state()
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
+            # Upsert (not INSERT OR REPLACE) so the rowid stays stable —
+            # the FTS and vector tables are keyed by it.
             conn.execute(
                 """
-                INSERT OR REPLACE INTO memories (
+                INSERT INTO memories (
                     id, query, response, content, type, scope, metadata, tags,
                     confidence, requires_verification, archived, state, access_count,
                     created_at, updated_at, expires_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    query = excluded.query,
+                    response = excluded.response,
+                    content = excluded.content,
+                    type = excluded.type,
+                    scope = excluded.scope,
+                    metadata = excluded.metadata,
+                    tags = excluded.tags,
+                    confidence = excluded.confidence,
+                    requires_verification = excluded.requires_verification,
+                    archived = excluded.archived,
+                    state = excluded.state,
+                    access_count = excluded.access_count,
+                    created_at = excluded.created_at,
+                    updated_at = excluded.updated_at,
+                    expires_at = excluded.expires_at
                 """,
                 (
                     entry.id,
@@ -104,11 +258,30 @@ class SqliteMemoryStore(MemoryStore):
                     entry.expires_at.isoformat() if entry.expires_at else None,
                 ),
             )
+            rowid = conn.execute(
+                "SELECT rowid FROM memories WHERE id = ?", (entry.id,)
+            ).fetchone()[0]
+            if self._fts_enabled:
+                conn.execute("DELETE FROM memories_fts WHERE rowid = ?", (rowid,))
+                conn.execute(
+                    "INSERT INTO memories_fts(rowid, search_text) VALUES (?, ?)",
+                    (rowid, self._search_document(entry)),
+                )
+            if self._vec_enabled and self._embedder is not None:
+                import sqlite_vec
+
+                vector = self._embedder([self._search_document(entry)])[0]
+                # vec0 tables don't support INSERT OR REPLACE; delete first.
+                conn.execute("DELETE FROM memories_vec WHERE rowid = ?", (rowid,))
+                conn.execute(
+                    "INSERT INTO memories_vec(rowid, embedding) VALUES (?, ?)",
+                    (rowid, sqlite_vec.serialize_float32(vector)),
+                )
             conn.commit()
         return entry
 
     def get(self, memory_id: str) -> MemoryEntry | None:
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.execute("SELECT * FROM memories WHERE id = ?", (memory_id,))
             row = cursor.fetchone()
@@ -120,10 +293,59 @@ class SqliteMemoryStore(MemoryStore):
         return self.store(entry)
 
     def delete(self, memory_id: str) -> bool:
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
+            self._delete_index_rows(conn, "id = ?", [memory_id])
             cursor = conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
             conn.commit()
             return cursor.rowcount > 0
+
+    def _delete_index_rows(self, conn: sqlite3.Connection, where: str, params: list) -> None:
+        """Remove FTS/vector rows for memories matching a WHERE clause."""
+        if self._fts_enabled:
+            conn.execute(
+                f"DELETE FROM memories_fts WHERE rowid IN "
+                f"(SELECT rowid FROM memories WHERE {where})",
+                params,
+            )
+        if self._vec_enabled:
+            conn.execute(
+                f"DELETE FROM memories_vec WHERE rowid IN "
+                f"(SELECT rowid FROM memories WHERE {where})",
+                params,
+            )
+
+    # ------------------------------------------------------------------
+    # Listing and filters
+    # ------------------------------------------------------------------
+
+    def _build_filters(
+        self,
+        *,
+        scopes: list[MemoryScope] | None,
+        include_archived: bool,
+        include_expired: bool,
+        memory_type: MemoryType | None = None,
+        table_alias: str = "",
+    ) -> tuple[list[str], list[Any]]:
+        prefix = f"{table_alias}." if table_alias else ""
+        where_clauses: list[str] = []
+        params: list[Any] = []
+        if not include_archived:
+            where_clauses.append(f"{prefix}archived = 0")
+        if scopes:
+            placeholders = ",".join("?" * len(scopes))
+            where_clauses.append(f"{prefix}scope IN ({placeholders})")
+            params.extend(s.value for s in scopes)
+        if memory_type:
+            where_clauses.append(f"{prefix}type = ?")
+            params.append(memory_type.value)
+        if not include_expired:
+            where_clauses.append(
+                f"({prefix}state != 'expired' AND "
+                f"({prefix}expires_at IS NULL OR {prefix}expires_at > ?))"
+            )
+            params.append(datetime.now(timezone.utc).isoformat())
+        return where_clauses, params
 
     def list_all(
         self,
@@ -135,36 +357,26 @@ class SqliteMemoryStore(MemoryStore):
         include_expired: bool = False,
         memory_type: MemoryType | None = None,
     ) -> list[MemoryEntry]:
-        where_clauses = []
-        params: list[Any] = []
-
-        if not include_archived:
-            where_clauses.append("archived = 0")
-
-        if scopes:
-            scope_values = [s.value for s in scopes]
-            placeholders = ",".join("?" * len(scope_values))
-            where_clauses.append(f"scope IN ({placeholders})")
-            params.extend(scope_values)
-
-        if memory_type:
-            where_clauses.append("type = ?")
-            params.append(memory_type.value)
-
-        if not include_expired:
-            where_clauses.append("(expires_at IS NULL OR expires_at > ?)")
-            params.append(datetime.now(timezone.utc).isoformat())
-
+        where_clauses, params = self._build_filters(
+            scopes=scopes,
+            include_archived=include_archived,
+            include_expired=include_expired,
+            memory_type=memory_type,
+        )
         where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
         params.extend([limit, offset])
 
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.execute(
                 f"SELECT * FROM memories {where_sql} ORDER BY updated_at DESC LIMIT ? OFFSET ?",
                 params,
             )
             return [self._row_to_entry(row) for row in cursor.fetchall()]
+
+    # ------------------------------------------------------------------
+    # Search
+    # ------------------------------------------------------------------
 
     def search(
         self,
@@ -175,60 +387,24 @@ class SqliteMemoryStore(MemoryStore):
         include_archived: bool = False,
         include_expired: bool = False,
     ) -> list[tuple[MemoryEntry, float]]:
-        # For SQLite, we'll do a simple LIKE-based search with BM25 ranking
-        # In a production system, you'd want to use SQLite's FTS5 extension
-        entries = self.list_all(
-            limit=10_000,
+        if self._vec_enabled:
+            return self._vector_search(
+                query,
+                top_k=top_k,
+                scopes=scopes,
+                include_archived=include_archived,
+                include_expired=include_expired,
+            )
+        # Without embeddings, "semantic" search is lexical (BM25 scaled by
+        # query-term coverage). Install agent-memory-sdk[semantic] or use the
+        # chromadb backend when paraphrase robustness matters.
+        return self.keyword_search(
+            query,
+            top_k=top_k,
             scopes=scopes,
             include_archived=include_archived,
             include_expired=include_expired,
         )
-        if not entries:
-            return []
-
-        # First try BM25 keyword matching
-        from rank_bm25 import BM25Okapi
-
-        corpus = [_tokenize(self._search_document(e)) for e in entries]
-        bm25 = BM25Okapi(corpus)
-        scores = bm25.get_scores(_tokenize(query))
-        max_score = max(scores) if len(scores) else 1.0
-
-        # If BM25 finds matches, use those
-        if max_score > 0:
-            ranked = sorted(
-                zip(entries, scores),
-                key=lambda pair: pair[1],
-                reverse=True,
-            )[:top_k]
-            return [(entry, float(score / max_score)) for entry, score in ranked if score > 0]
-
-        # Fallback: simple token overlap search for partial matches
-        # Filter out common stop words
-        stop_words = {'what', 'is', 'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'from', 'as', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might', 'must', 'can', 'this', 'that', 'these', 'those', 'i', 'you', 'he', 'she', 'it', 'we', 'they', 'me', 'him', 'her', 'us', 'them', 'my', 'your', 'his', 'its', 'our', 'their', 'mine', 'yours', 'hers', 'ours', 'theirs'}
-
-        query_tokens = set(_tokenize(query)) - stop_words
-        if not query_tokens:
-            return []
-
-        matches = []
-        for entry in entries:
-            doc_text = self._search_document(entry).lower()
-            doc_tokens = set(_tokenize(doc_text)) - stop_words
-
-            # Check for significant token overlap (at least 1 meaningful token)
-            overlap = len(query_tokens & doc_tokens)
-            if overlap > 0:
-                # Score based on token overlap ratio
-                score = overlap / max(len(query_tokens), 1)
-                matches.append((entry, score))
-
-        if matches:
-            matches.sort(key=lambda x: x[1], reverse=True)
-            max_match_score = matches[0][1]
-            return [(entry, float(score / max_match_score)) for entry, score in matches[:top_k]]
-
-        return []
 
     def keyword_search(
         self,
@@ -239,14 +415,197 @@ class SqliteMemoryStore(MemoryStore):
         include_archived: bool = False,
         include_expired: bool = False,
     ) -> list[tuple[MemoryEntry, float]]:
-        # Same as search for SQLite backend
-        return self.search(
-            query,
-            top_k=top_k,
+        if not self._fts_enabled:
+            return self._python_keyword_search(
+                query,
+                top_k=top_k,
+                scopes=scopes,
+                include_archived=include_archived,
+                include_expired=include_expired,
+            )
+
+        match_expr = self._fts_match_expression(query)
+        if not match_expr:
+            return []
+
+        where_clauses, params = self._build_filters(
+            scopes=scopes,
+            include_archived=include_archived,
+            include_expired=include_expired,
+            table_alias="m",
+        )
+        filter_sql = (" AND " + " AND ".join(where_clauses)) if where_clauses else ""
+
+        with self._connect() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                f"""
+                SELECT m.*, bm25(memories_fts) AS fts_rank
+                FROM memories_fts
+                JOIN memories m ON m.rowid = memories_fts.rowid
+                WHERE memories_fts MATCH ?{filter_sql}
+                ORDER BY fts_rank
+                LIMIT ?
+                """,
+                [match_expr, *params, top_k * 3],
+            ).fetchall()
+
+        if not rows:
+            return []
+
+        # bm25() is a rank (more negative = better); convert to a positive
+        # relevance score, normalize, and scale by query-term coverage so a
+        # weak best match cannot score a perfect 1.0.
+        raw = [max(0.0, -float(row["fts_rank"])) for row in rows]
+        max_raw = max(raw)
+        results: list[tuple[MemoryEntry, float]] = []
+        for row, raw_score in zip(rows, raw):
+            entry = self._row_to_entry(row)
+            coverage = query_coverage(query, self._search_document(entry))
+            if max_raw > 0:
+                score = (raw_score / max_raw) * (0.5 + 0.5 * coverage)
+            else:
+                score = 0.5 + 0.5 * coverage if coverage > 0 else 0.0
+            if score > 0:
+                results.append((entry, score))
+        results.sort(key=lambda pair: pair[1], reverse=True)
+        return results[:top_k]
+
+    def _python_keyword_search(
+        self,
+        query: str,
+        *,
+        top_k: int,
+        scopes: list[MemoryScope] | None,
+        include_archived: bool,
+        include_expired: bool,
+    ) -> list[tuple[MemoryEntry, float]]:
+        entries = self.list_all(
+            limit=10_000,
             scopes=scopes,
             include_archived=include_archived,
             include_expired=include_expired,
         )
+        if not entries:
+            return []
+        documents = [self._search_document(e) for e in entries]
+        return bm25_scores(query, entries, documents, top_k)
+
+    def _vector_search(
+        self,
+        query: str,
+        *,
+        top_k: int,
+        scopes: list[MemoryScope] | None,
+        include_archived: bool,
+        include_expired: bool,
+    ) -> list[tuple[MemoryEntry, float]]:
+        import sqlite_vec
+
+        assert self._embedder is not None
+        query_vector = self._embedder([query])[0]
+
+        with self._connect() as conn:
+            conn.row_factory = sqlite3.Row
+            # Over-fetch so post-KNN filtering still yields top_k results.
+            knn = conn.execute(
+                """
+                SELECT rowid, distance FROM memories_vec
+                WHERE embedding MATCH ? AND k = ?
+                """,
+                (sqlite_vec.serialize_float32(query_vector), max(top_k * 4, 20)),
+            ).fetchall()
+            if not knn:
+                return []
+
+            distances = {row["rowid"]: float(row["distance"]) for row in knn}
+            placeholders = ",".join("?" * len(distances))
+            where_clauses, params = self._build_filters(
+                scopes=scopes,
+                include_archived=include_archived,
+                include_expired=include_expired,
+            )
+            filter_sql = (" AND " + " AND ".join(where_clauses)) if where_clauses else ""
+            rows = conn.execute(
+                f"SELECT rowid, * FROM memories WHERE rowid IN ({placeholders}){filter_sql}",
+                [*distances.keys(), *params],
+            ).fetchall()
+
+        matches = [
+            (self._row_to_entry(row), max(0.0, 1.0 - distances[row["rowid"]]))
+            for row in rows
+        ]
+        matches.sort(key=lambda pair: pair[1], reverse=True)
+        return matches[:top_k]
+
+    @staticmethod
+    def _fts_match_expression(query: str) -> str:
+        tokens = _tokenize(query)
+        if not tokens:
+            return ""
+        return " OR ".join(f'"{token}"' for token in tokens)
+
+    # ------------------------------------------------------------------
+    # Aggregates (pure SQL — no row loading)
+    # ------------------------------------------------------------------
+
+    def stats(self) -> dict[str, Any]:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            total, total_access = conn.execute(
+                "SELECT COUNT(*), COALESCE(SUM(access_count), 0) FROM memories"
+            ).fetchone()
+            # Effective state: archived wins, then expiry (marked or by
+            # timestamp), then active — mirrors MemoryEntry.refresh_state().
+            state_rows = conn.execute(
+                """
+                SELECT CASE
+                    WHEN archived = 1 THEN 'archived'
+                    WHEN state = 'expired'
+                         OR (expires_at IS NOT NULL AND expires_at <= ?) THEN 'expired'
+                    ELSE 'active'
+                END AS effective_state, COUNT(*)
+                FROM memories GROUP BY effective_state
+                """,
+                (now,),
+            ).fetchall()
+            type_rows = conn.execute(
+                "SELECT type, COUNT(*) FROM memories GROUP BY type"
+            ).fetchall()
+        return {
+            "total": total,
+            "by_state": dict(state_rows),
+            "by_type": dict(type_rows),
+            "total_access_count": total_access,
+        }
+
+    def cleanup_expired(self, *, delete: bool = False) -> dict[str, int]:
+        now = datetime.now(timezone.utc).isoformat()
+        expired_where = "(state = 'expired' OR (expires_at IS NOT NULL AND expires_at <= ?))"
+        with self._connect() as conn:
+            if delete:
+                self._delete_index_rows(conn, expired_where, [now])
+                cursor = conn.execute(f"DELETE FROM memories WHERE {expired_where}", (now,))
+                conn.commit()
+                return {"expired": 0, "deleted": cursor.rowcount}
+
+            conn.execute(
+                """
+                UPDATE memories SET state = 'expired'
+                WHERE archived = 0 AND state != 'expired'
+                  AND expires_at IS NOT NULL AND expires_at <= ?
+                """,
+                (now,),
+            )
+            expired = conn.execute(
+                f"SELECT COUNT(*) FROM memories WHERE {expired_where}", (now,)
+            ).fetchone()[0]
+            conn.commit()
+        return {"expired": expired, "deleted": 0}
+
+    # ------------------------------------------------------------------
+    # Row mapping
+    # ------------------------------------------------------------------
 
     @staticmethod
     def _search_document(entry: MemoryEntry) -> str:
@@ -271,37 +630,3 @@ class SqliteMemoryStore(MemoryStore):
             updated_at=datetime.fromisoformat(row["updated_at"]),
             expires_at=datetime.fromisoformat(row["expires_at"]) if row["expires_at"] else None,
         )
-
-    def _filter_entries(
-        self,
-        entries: list[MemoryEntry],
-        *,
-        include_archived: bool = False,
-        include_expired: bool = False,
-    ) -> list[MemoryEntry]:
-        filtered = []
-        for entry in entries:
-            entry.refresh_state()
-            if not include_archived and entry.archived:
-                continue
-            if not include_expired and entry.is_expired:
-                continue
-            filtered.append(entry)
-        return filtered
-
-    def _filter_matches(
-        self,
-        matches: list[tuple[MemoryEntry, float]],
-        *,
-        include_archived: bool = False,
-        include_expired: bool = False,
-    ) -> list[tuple[MemoryEntry, float]]:
-        filtered = []
-        for entry, score in matches:
-            entry.refresh_state()
-            if not include_archived and entry.archived:
-                continue
-            if not include_expired and entry.is_expired:
-                continue
-            filtered.append((entry, score))
-        return filtered

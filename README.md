@@ -1,6 +1,6 @@
 # Agent Memory
 
-[![CI](https://github.com/TheProdSDE/agent-memory/actions/workflows/ci.yml/badge.svg)](https://github.com/TheProdSDE/agent-memory/actions)
+[![CI](https://github.com/TheProdSDE/agent-memory-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/TheProdSDE/agent-memory-sdk/actions)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://opensource.org/licenses/MIT)
 [![PyPI version](https://img.shields.io/pypi/v/agent-memory-sdk.svg)](https://pypi.org/project/agent-memory-sdk/)
@@ -43,6 +43,30 @@ flowchart TD
 - ✅ **Lower token usage** - Only inject when beneficial
 - ✅ **Faster responses** - Instant replay for repeated queries
 - ✅ **Better long-term behavior** - Agents learn when to trust memory
+
+### How it compares
+
+mem0, Zep, Letta, and LangMem answer *"what did we store about this?"*.
+Agent Memory also answers **"should I use it, and how much should I trust it?"**
+— every `resolve()` returns an explicit action (replay / restore / verify /
+none) with a scored, explainable rationale (`decision.explain()`).
+
+The difference shows up on **trap queries**. Given a stored memory
+*"What payment methods do you support?"*, a naive top-1 retriever answers
+*"Does the platform **support** two-factor authentication?"* with the payment
+answer. Agent Memory returns `none`:
+
+```text
+action: none
+confidence: 0.68
+reasons:
+  - keyword match
+  - below restore threshold
+```
+
+Our eval suite includes these adversarial cases and scores **25/25 (100%)**
+on both backends — see [measured results](docs/benchmarks.md) with the exact
+methodology and reproduce commands. No synthetic baselines.
 
 ---
 
@@ -138,10 +162,33 @@ flowchart TD
 ```
 
 **Policy scoring considers:**
-- 📊 Semantic similarity (70% weight)
+- 📊 Semantic + keyword similarity (55% weight)
 - 📅 Recency (15% weight)
 - ✅ Confidence score (20% weight)
 - 🔄 Usage frequency (10% weight)
+
+### 🗄️ Storage Backends
+
+| Backend | Retrieval | Best for |
+|---------|-----------|----------|
+| `sqlite` (default) | Lexical: FTS5 index + BM25 + query-term coverage | Zero-setup, fast installs, exact/near-exact queries |
+| `sqlite` + `[semantic]` extra | Vector (sqlite-vec + ONNX MiniLM) + FTS5 hybrid | Paraphrase robustness with no server, no torch |
+| `chromadb` | Vector embeddings + BM25 hybrid | Existing ChromaDB deployments |
+
+```bash
+pip install "agent-memory-sdk[semantic]"   # enables vector search on the default backend
+```
+
+```python
+memory = Memory(persist_dir=".agent_memory")  # auto-detects the semantic extra
+memory.store.semantic_search_enabled          # True when vectors are active
+```
+
+> **Honesty note:** Without the `semantic` extra, the default `sqlite`
+> backend has no embedding model — its "semantic" search is lexical. Exact
+> and near-exact queries work great; a paraphrase with zero shared words
+> ("I can't remember my login credentials" → password-reset memory) needs
+> the `semantic` extra or the `chromadb` backend.
 
 ### 🗃️ Structured Memory
 
@@ -197,8 +244,8 @@ print(decision.explain())  # Detailed score breakdown
 pip install agent-memory-sdk
 
 # From source (development)
-git clone https://github.com/TheProdSDE/agent-memory.git
-cd agent-memory
+git clone https://github.com/TheProdSDE/agent-memory-sdk.git
+cd agent-memory-sdk
 pip install -e ".[dev]"
 ```
 
@@ -331,7 +378,7 @@ Add to `~/.cursor/mcp.json`:
       "args": [
         "run", "--rm", "-i",
         "-v", "agent_memory_data:/home/appuser/.agent_memory",
-        "ghcr.io/theprodsde/agent-memory:latest",
+        "ghcr.io/theprodsde/agent-memory-sdk:latest",
         "agent-memory-mcp"
       ]
     }
@@ -403,7 +450,7 @@ agent-memory eval --datasets ./benchmarks/datasets
 
 ---
 
-## � Release Process
+## 🚢 Release Process
 
 ### How Releases Work
 
@@ -431,8 +478,8 @@ When you push a tag matching `v*` (e.g., `v0.1.3`, `v1.0.0`, `v2.0.0-beta.1`):
 | Artifact | Location |
 |----------|----------|
 | **PyPI Package** | `pip install agent-memory-sdk==0.1.3` |
-| **GitHub Release** | https://github.com/theprodsde/agent-memory/releases/tag/v0.1.3 |
-| **Docker Image** | `ghcr.io/theprodsde/agent-memory:v0.1.3` (if configured) |
+| **GitHub Release** | https://github.com/theprodsde/agent-memory-sdk/releases/tag/v0.1.3 |
+| **Docker Image** | `ghcr.io/theprodsde/agent-memory-sdk:v0.1.3` (if configured) |
 | **Source Archives** | Auto-attached to GitHub Release |
 
 ### Version Format
@@ -466,7 +513,7 @@ git tag v0.1.3
 git push origin v0.1.3
 
 # 4. Monitor workflow
-# https://github.com/theprodsde/agent-memory/actions
+# https://github.com/theprodsde/agent-memory-sdk/actions
 ```
 
 ### Rollback / Delete Release
@@ -484,33 +531,38 @@ git push origin --delete v0.1.3
 
 ---
 
-## 📈 Current Status (v0.1.4)
+## 📈 Current Status (v0.2.0-dev)
 
 ### ✅ Implemented
-- Hybrid retrieval (BM25 + Vector + RRF fusion)
-- Decision engine (replay / restore / verify / none)
+- Decision engine (replay / restore / verify / none) with adversarial eval cases
 - `decision.explain()` observability
-- Benchmark & evaluation datasets
-- TTL + memory states + cleanup
+- Hybrid retrieval (BM25 + coverage scoring + RRF fusion; vectors with `[semantic]`)
+- SQLite FTS5 keyword index (no per-query index rebuilds; ~12ms at 5k memories)
+- Optional vector search on SQLite via sqlite-vec + fastembed (`[semantic]` extra)
+- SQL-aggregate `stats()` / `cleanup()` (no row caps)
+- WAL mode + busy timeout for concurrent MCP/CLI/app access
+- TTL + memory states + consolidation
 - CLI (remember, resolve, stats, benchmark, eval)
-- MCP support for Cursor and other clients
-- Comprehensive documentation
-- All tests passing
-- CI/CD pipeline
-- Docker support
+- MCP server for Cursor, Claude Code, and other clients (mcp 1.x and 2.x)
+- Evaluation datasets incl. trap cases — 25/25 on both backends
+- CI: lint + enforced mypy + tests on 3.10–3.13 + semantic-path job
 
 ### 🚧 Roadmap
 
 | Feature | Status | ETA |
 |---------|--------|-----|
 | Async API | ✅ Completed | v0.1.0-alpha |
-| SQLite backend | ✅ Completed | v0.1.0-alpha |
-| Redis backend | 📋 Planned | v0.2.0 |
+| SQLite backend (FTS5 + sqlite-vec) | ✅ Completed | v0.2.0 |
+| LongMemEval / LoCoMo benchmark harness | 📋 Planned | v0.2.x |
+| LangChain / LlamaIndex adapters | 📋 Planned | v0.2.x |
+| Redis backend | 📋 Planned | v0.3.0 |
 | Postgres backend | 📋 Planned | v0.3.0 |
 | FastAPI server + dashboard | 📋 Planned | v0.3.0 |
 | Memory graph | 📋 Planned | v0.4.0 |
 | Confidence learning | 📋 Planned | v0.4.0 |
 | Multi-agent support | 📋 Planned | v0.5.0 |
+
+Have an opinion on priorities? Open a [Discussion](https://github.com/TheProdSDE/agent-memory-sdk/discussions) — roadmap input is the fastest way to contribute.
 
 ---
 
@@ -519,8 +571,8 @@ git push origin --delete v0.1.3
 | Component | Technology |
 |-----------|------------|
 | **Language** | Python 3.10+ |
-| **Storage** | ChromaDB (local embeddings) |
-| **Retrieval** | BM25 + Vector Search + RRF |
+| **Storage** | SQLite (FTS5, optional sqlite-vec) or ChromaDB |
+| **Retrieval** | BM25 + coverage scoring + Vector Search + RRF |
 | **Interface** | MCP (Model Context Protocol) |
 | **CLI** | argparse |
 | **Testing** | pytest + pytest-asyncio |
@@ -539,14 +591,16 @@ git push origin --delete v0.1.3
 - **[Architecture](docs/architecture.md)** - Deep dive into the system design
 - **[Memory Model](docs/memory-model.md)** - Understanding memory types and states
 - **[Policies](docs/policies.md)** - Customizing scoring and decision logic
-- **[Benchmarks](docs/benchmarks.md)** - Performance metrics and evaluation
+- **[Benchmarks](docs/benchmarks.md)** - Measured results and reproduce commands
+- **[Why a Decision Layer?](docs/why-decision-layer.md)** - The failure mode this project exists to fix
 - **[FAQ](docs/faq.md)** - Common questions and troubleshooting
 
 ---
 
 ## 🤝 Contributing
 
-Contributions are welcome! Please follow these steps:
+Contributions are welcome — see **[CONTRIBUTING.md](CONTRIBUTING.md)** for
+good first issues and the review checklist. Quick version:
 
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/amazing-feature`)
@@ -561,8 +615,8 @@ Contributions are welcome! Please follow these steps:
 
 ```bash
 # Clone the repository
-git clone https://github.com/TheProdSDE/agent-memory.git
-cd agent-memory
+git clone https://github.com/TheProdSDE/agent-memory-sdk.git
+cd agent-memory-sdk
 
 # Create virtual environment
 python -m venv .venv
@@ -601,8 +655,8 @@ This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) 
 
 ## 📞 Support
 
-- **Issues**: [GitHub Issues](https://github.com/TheProdSDE/agent-memory/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/TheProdSDE/agent-memory/discussions)
+- **Issues**: [GitHub Issues](https://github.com/TheProdSDE/agent-memory-sdk/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/TheProdSDE/agent-memory-sdk/discussions)
 - **Email**: theprodsde@gmail.com
 
 ---

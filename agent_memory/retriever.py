@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from agent_memory.models import MemoryEntry, MemoryScope, RetrievalResult
 from agent_memory.policy import DecisionPolicy, DefaultPolicy
 from agent_memory.store import MemoryStore
@@ -66,26 +68,24 @@ class MemoryRetriever:
         *,
         k: int = 60,
     ) -> list[tuple[MemoryEntry, float, float]]:
-        scores: dict[str, dict[str, float | MemoryEntry]] = {}
+        @dataclass
+        class _Bucket:
+            entry: MemoryEntry
+            semantic: float = 0.0
+            keyword: float = 0.0
+            rrf: float = 0.0
+
+        buckets: dict[str, _Bucket] = {}
 
         for rank, (entry, score) in enumerate(vector_hits, start=1):
-            bucket = scores.setdefault(entry.id, {"entry": entry, "semantic": 0.0, "keyword": 0.0})
-            bucket["semantic"] = max(float(bucket["semantic"]), score)
-            bucket["rrf"] = float(bucket.get("rrf", 0.0)) + 1.0 / (k + rank)
+            bucket = buckets.setdefault(entry.id, _Bucket(entry=entry))
+            bucket.semantic = max(bucket.semantic, score)
+            bucket.rrf += 1.0 / (k + rank)
 
         for rank, (entry, score) in enumerate(keyword_hits, start=1):
-            bucket = scores.setdefault(entry.id, {"entry": entry, "semantic": 0.0, "keyword": 0.0})
-            bucket["keyword"] = max(float(bucket["keyword"]), score)
-            bucket["rrf"] = float(bucket.get("rrf", 0.0)) + 1.0 / (k + rank)
+            bucket = buckets.setdefault(entry.id, _Bucket(entry=entry))
+            bucket.keyword = max(bucket.keyword, score)
+            bucket.rrf += 1.0 / (k + rank)
 
-        fused = [
-            (
-                bucket["entry"],  # type: ignore[arg-type]
-                float(bucket.get("semantic", 0.0)),
-                float(bucket.get("keyword", 0.0)),
-                float(bucket.get("rrf", 0.0)),
-            )
-            for bucket in scores.values()
-        ]
-        fused.sort(key=lambda item: item[3], reverse=True)
-        return [(entry, semantic, keyword) for entry, semantic, keyword, _ in fused]
+        fused = sorted(buckets.values(), key=lambda b: b.rrf, reverse=True)
+        return [(b.entry, b.semantic, b.keyword) for b in fused]

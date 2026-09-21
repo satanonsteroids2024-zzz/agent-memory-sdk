@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/bin/python -m pytest tests/ -q)",
+      "Bash(/Users/karangehlod/theprodsde/agent-memory-sdk/.venv/bin/python -)",
+      "Bash(cd /Users/karangehlod/theprodsde/agent-memory-sdk)",
+      "Bash(mktemp -d)",
+      "Bash(.venv/bin/agent-memory --data-dir __TRACKED_VAR__/evalmem eval)",
+      "Bash(.venv/bin/mypy agent_memory/ --ignore-missing-imports)",
+      "Bash(git ls-remote *)",
+      "Bash(.venv/bin/python -c ' *)",
+      "Bash(.venv/bin/pip show *)",
+      "Bash(git reset *)",
+      "Bash(.venv/bin/python -m pytest tests/ -q -x)",
+      "Bash(.venv/bin/python -m pytest tests/test_mcp_server.py -q)",
+      "Bash(.venv/bin/python -m pytest tests/test_scale.py -q)",
+      "Bash(.venv/bin/agent-memory --data-dir __CMDSUB_OUTPUT__/evalmem eval)",
+      "Bash(.venv/bin/python -c \"import sqlite_vec, fastembed; print\\('sqlite-vec + fastembed installed'\\)\")",
+      "Bash(.venv/bin/python -m pytest tests/test_v03.py::test_ttl_expires_memory -q)",
+      "Bash(.venv/bin/python -m pytest tests/test_semantic_sqlite.py -q)",
+      "Bash(.venv/bin/mypy agent_memory/ mcp_server/)"
+    ]
+  }
+}
