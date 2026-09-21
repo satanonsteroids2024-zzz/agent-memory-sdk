@@ -16,8 +16,8 @@
 
 #### Windows (PowerShell)
 ```powershell
-git clone https://github.com/TheProdSDE/agent-memory.git
-cd agent-memory
+git clone https://github.com/TheProdSDE/agent-memory-sdk.git
+cd agent-memory-sdk
 python -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install -e ".[dev]"
@@ -25,8 +25,8 @@ pip install -e ".[dev]"
 
 #### Windows (Command Prompt)
 ```cmd
-git clone https://github.com/TheProdSDE/agent-memory.git
-cd agent-memory
+git clone https://github.com/TheProdSDE/agent-memory-sdk.git
+cd agent-memory-sdk
 python -m venv .venv
 .venv\Scripts\activate.bat
 pip install -e ".[dev]"
@@ -34,8 +34,8 @@ pip install -e ".[dev]"
 
 #### Linux/macOS
 ```bash
-git clone https://github.com/TheProdSDE/agent-memory.git
-cd agent-memory
+git clone https://github.com/TheProdSDE/agent-memory-sdk.git
+cd agent-memory-sdk
 python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
@@ -111,10 +111,10 @@ docker-compose run --rm agent-memory agent-memory stats
 
 ```bash
 # Install from PyPI
-pip install agent-memory
+pip install agent-memory-sdk
 
 # Or install from GitHub
-pip install git+https://github.com/TheProdSDE/agent-memory.git
+pip install git+https://github.com/TheProdSDE/agent-memory-sdk.git
 
 # Verify
 agent-memory --help
