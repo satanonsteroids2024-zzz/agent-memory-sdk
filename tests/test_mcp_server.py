@@ -74,6 +74,10 @@ def test_resolve_replay_contract(mcp_memory) -> None:
     assert reply["memory_id"]
     assert "instruction" in reply
     assert reply["confidence"] >= 0.85
+    # A replay must say what it remembered, not just the answer.
+    assert reply["matched_query"] == "How do I reset my password?"
+    assert reply["stored_at"]
+    assert reply["times_reused"] >= 1
 
 
 def test_resolve_restore_contract(mcp_memory) -> None:

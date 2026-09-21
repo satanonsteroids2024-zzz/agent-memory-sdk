@@ -31,6 +31,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `mcp_server.reset_memory()` and lazy env reads for testability.
 - CONTRIBUTING.md with good-first-issues; docs/why-decision-layer.md.
 - README demo GIF (regenerate via `docs/assets/record-demo.sh`).
+- MCP replay replies now include `matched_query`, `stored_at`, and
+  `times_reused` so clients can see what was remembered, not just the answer.
+- CLI `resolve` output is now human-readable: action, confidence, the
+  remembered query (with stored date and reuse count on replay), and the
+  response/reason — instead of the raw Decision repr.
+- README "Wiring It Into Your Agent" section: the resolve/remember loop,
+  write rules, multi-process sharing, and when to use (and not use) this.
 - MCP Registry manifest (`server.json`, validated against the 2025-09-29
   schema) plus an `agent-memory-sdk` console-script alias so
   `uvx agent-memory-sdk` launches the MCP server; `mcp-name` ownership

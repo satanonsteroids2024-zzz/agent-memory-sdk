@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Driver for the README demo GIF. Regenerate from the repo root with:
-#   asciinema rec --overwrite -c "bash docs/assets/record-demo.sh" /tmp/demo.cast
-#   agg --font-size 16 --speed 1 /tmp/demo.cast docs/assets/demo.gif
+#   asciinema rec --overwrite --cols 110 --rows 32 -c "bash docs/assets/record-demo.sh" /tmp/demo.cast
+#   agg --font-size 16 /tmp/demo.cast docs/assets/demo.gif
 # Requires: brew install asciinema agg; package installed in .venv
+# (record without the [semantic] extra so CLI calls stay snappy)
 
 set -e
 export PATH="$PWD/.venv/bin:$PATH"
@@ -13,7 +14,7 @@ type_cmd() {
   local cmd="$1"
   for ((i = 0; i < ${#cmd}; i++)); do
     printf '%s' "${cmd:$i:1}"
-    sleep 0.018
+    sleep 0.016
   done
   printf '\n'
   sleep 0.3
@@ -31,14 +32,17 @@ run() {
 }
 
 say "# Agent Memory — a decision layer, not just a retriever"
-run "agent-memory --data-dir \$D remember 'How do I reset my password?' 'Go to Settings → Security → Reset Password.'" 1.2
-run "agent-memory --data-dir \$D remember 'What payment methods do you support?' 'We accept Visa, Mastercard, and PayPal.'" 1.2
+run "agent-memory --data-dir \$D remember 'How do I reset my password?' 'Go to Settings → Security → Reset Password.'" 1.0
+run "agent-memory --data-dir \$D remember 'What payment methods do you support?' 'We accept Visa, Mastercard, and PayPal.'" 1.0
 echo
-say "# Exact repeat → REPLAY the stored answer"
-run "agent-memory --data-dir \$D resolve 'How do I reset my password?'" 2.2
+say "# Exact repeat → REPLAY — and it tells you what it remembered"
+run "agent-memory --data-dir \$D resolve 'How do I reset my password?'" 3.0
+echo
+say "# Paraphrase → RESTORE the memory as context, not verbatim"
+run "agent-memory --data-dir \$D resolve 'I forgot my password, what should I do?'" 3.0
 echo
 say "# Shares the word 'support' — a naive retriever replays the PayPal answer…"
-run "agent-memory --data-dir \$D resolve 'Does the platform support two-factor authentication?' --explain" 4.5
+run "agent-memory --data-dir \$D resolve 'Does the platform support two-factor authentication?' --explain" 5.0
 echo
 say "# action: none — and it shows you exactly why."
 sleep 2

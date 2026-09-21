@@ -296,6 +296,93 @@ match decision.action:
 
 ---
 
+## 🔁 Wiring It Into Your Agent
+
+**Nothing is saved automatically.** Your application decides what's worth
+remembering — that's deliberate, because auto-saving every turn fills the
+store with junk. Integration is two calls at two points in your agent loop:
+`resolve()` *before* the LLM call, `remember()` *after* an answer worth keeping.
+
+```python
+from agent_memory import Memory, MemoryAction
+
+memory = Memory(persist_dir="~/.myapp_memory")
+
+def handle(user_query: str) -> str:
+    decision = memory.resolve(user_query)          # ① BEFORE the LLM call
+
+    if decision.action == MemoryAction.REPLAY:
+        return decision.response                   # no LLM call at all
+
+    if decision.action == MemoryAction.RESTORE:
+        context = memory.format_restore_context(decision)
+        answer = call_llm(user_query, system_extra=context)
+    elif decision.action == MemoryAction.VERIFY:
+        answer = revalidate_or_regenerate(decision.memory, user_query)
+    else:  # NONE — memory stayed out of the way
+        answer = call_llm(user_query)
+
+    memory.remember(user_query, answer)            # ② AFTER a good answer
+    return answer
+```
+
+### Every decision says what it remembered
+
+A REPLAY is never a black box — the decision carries the full stored entry,
+so you always know *which* memory answered and can show or log it:
+
+```python
+decision = memory.resolve("How do I reset my password?")
+decision.response        # the stored answer being replayed
+decision.memory.query    # the original question it matched
+decision.memory.created_at, decision.memory.access_count, decision.memory.confidence
+print(decision.explain())  # full score breakdown: why this memory, why this action
+```
+
+(The MCP `resolve_memory` tool does the same: replay replies include
+`matched_query`, `stored_at`, and `times_reused` alongside the response.)
+
+### What to remember, and how
+
+| What you're saving | How to save it |
+|---|---|
+| A validated answer the user accepted | `remember(q, a, confidence=0.95)` |
+| An expensive tool/API result | `type="tool_output", ttl="1h"` — replays within the hour, expires after |
+| A fact that can go stale (rate limits, prices) | `type="fact", requires_verification=True` — always comes back as VERIFY, never silent replay |
+| A user preference | `type="preference", scope="user"` |
+| Project conventions ("how do we run tests") | `type="workflow", scope="project"` |
+| A low-certainty guess | `confidence=0.4` — may restore as context, never replays verbatim |
+
+### Sharing one memory across processes
+
+The store is a SQLite file under `persist_dir`. Every process pointing at
+the same directory shares the same memories — WAL mode makes concurrent
+access safe. So these all interoperate on one store:
+
+- **Your Python app** — the loop above, in-process.
+- **The MCP server** — for agents whose loop you don't own (Cursor, Claude
+  Code): the host LLM calls `remember_memory` / `resolve_memory` as tools.
+  Point `AGENT_MEMORY_DIR` at the same directory and something Cursor
+  learned this morning is replayable from your Python service this afternoon.
+- **The CLI** — cron jobs seeding memories from docs or tickets, and nightly
+  `agent-memory cleanup --delete`.
+
+### Where this earns its keep
+
+- **Support bot** — repeated questions REPLAY (zero LLM cost, identical
+  answers), paraphrases RESTORE the canonical answer, and policy facts
+  stored with `requires_verification=True` get re-checked before reuse.
+- **Coding agent** — project-scoped workflows stop the agent re-deriving
+  your conventions each session, but age into VERIFY when they go stale.
+- **Tool-output caching with judgment** — API results replay within their
+  TTL, and unrelated questions never get polluted by them (that's the
+  trap-query protection).
+
+Not for document RAG: this stores query→answer *experiences* and decides
+whether to trust them. It complements a document store, not replaces one.
+
+---
+
 ## 🛠️ API Reference
 
 ### Core Methods

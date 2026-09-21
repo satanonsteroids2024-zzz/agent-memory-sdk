@@ -100,6 +100,12 @@ def resolve_memory(
     if decision.action == MemoryAction.REPLAY:
         payload["response"] = decision.response
         payload["memory_id"] = decision.memory.id if decision.memory else None
+        # Show what was remembered, not just the answer: the stored question
+        # this matched and when it was stored, so the client can judge it.
+        if decision.memory:
+            payload["matched_query"] = decision.memory.query
+            payload["stored_at"] = decision.memory.created_at.isoformat()
+            payload["times_reused"] = decision.memory.access_count
         payload["instruction"] = "Return this exact response to the user."
     elif decision.action == MemoryAction.RESTORE:
         payload["context"] = [

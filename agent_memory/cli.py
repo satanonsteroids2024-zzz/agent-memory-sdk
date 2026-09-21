@@ -33,7 +33,17 @@ def cmd_remember(args: argparse.Namespace) -> int:
 def cmd_resolve(args: argparse.Namespace) -> int:
     memory = _create_memory(args)
     decision = memory.resolve(args.query)
-    print(decision)
+    print(f"action:     {decision.action.value}")
+    print(f"confidence: {decision.confidence:.2f}")
+    entry = decision.memory or (decision.context[0].entry if decision.context else None)
+    if decision.action.value == "replay" and entry:
+        print(f'remembered: "{entry.query}" (stored {entry.created_at:%Y-%m-%d}, reused {entry.access_count}x)')
+        print(f"response:   {decision.response}")
+    elif decision.action.value in ("restore", "verify") and entry:
+        print(f'remembered: "{entry.query}"')
+        print(f"reason:     {decision.reason}")
+    else:
+        print(f"reason:     {decision.reason}")
     if args.explain:
         print()
         print(decision.explain())
