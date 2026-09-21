@@ -7,7 +7,179 @@
       "response": "Go to Settings → Security → Reset Password and follow the email link.",
       "type": "conversation",
       "tags": ["auth", "faq"]
-    },
+{
+      "name": "decision_traps",
+      "description": "Adversarial cases for the decision layer: shared-word traps that naive retrieve-and-inject systems answer wrongly, plus verification-flagged facts.",
+      "memories": [
+            {
+                    "query": "How do I reset my password?",
+                    "response": "Go to Settings → Security → Reset Password and follow the email link.",
+                    "type": "conversation",
+                    "tags": ["auth", "faq"]
+            },
+            {
+                    "query": "What payment methods do you support?",
+                    "response": "We accept Visa, Mastercard, and PayPal.",
+                    "type": "conversation",
+                    "tags": ["billing"]
+            },
+            {
+                    "query": "What is the API rate limit?",
+                    "response": "1000 requests/minute per API key.",
+                    "type": "fact",
+                    "tags": ["api", "limits"],
+                    "requires_verification": true
+            },
+            {
+                    "query": "How do we deploy the backend to production?",
+                    "response": "Merge to main, tag a release, and CI deploys automatically.",
+                    "type": "workflow",
+                    "tags": ["deploy", "ci"]
+            },
+            {
+                    "query": "Where is the standup meeting held?",
+                    "response": "Zoom room 4, daily at 9:30am.",
+                    "type": "fact",
+                    "tags": ["team"]
+            },
+            {
+                    "query": "How do I request vacation days?",
+                    "response": "Submit the request in Workday; your manager approves it.",
+                    "type": "workflow",
+                    "tags": ["hr"]
+            },
+            {
+                    "query": "What is the customer refund policy?",
+                    "response": "Full refunds within 30 days of purchase, contact support with the order ID.",
+                    "type": "fact",
+                    "tags": ["billing", "policy"]
+            },
+            {
+                    "query": "Which database does the analytics service use?",
+                    "response": "ClickHouse, on the analytics-prod cluster.",
+                    "type": "fact",
+                    "tags": ["analytics", "infra"]
+            },
+            {
+                    "query": "How do I generate an API key?",
+                    "response": "Dashboard → Developer → Create key, then store it in your secrets manager.",
+                    "type": "workflow",
+                    "tags": ["api", "auth"]
+            },
+            {
+                    "query": "What is our error budget policy?",
+                    "response": "Freeze non-critical deploys when budget burn exceeds 2x for the month.",
+                    "type": "fact",
+                    "tags": ["sre", "policy"]
+            },
+            {
+                    "query": "What is the on-call escalation policy?",
+                    "response": "Page the primary on-call via PagerDuty; escalate to secondary after 15 minutes of no ack.",
+                    "type": "workflow",
+                    "tags": ["sre", "oncall"]
+            },
+            {
+                    "query": "How do I invite a new team member to the org?",
+                    "response": "Admin panel → Team → Invite, then assign a role from the dropdown.",
+                    "type": "workflow",
+                    "tags": ["admin", "team"]
+            }
+      ],
+        "cases": [
+              {
+                      "query": "How do I reset my password?",
+                      "expected_action": "replay",
+                      "notes": "Exact repeat"
+              },
+              {
+                      "query": "How do we deploy the backend to production?",
+                      "expected_action": "replay",
+                      "notes": "Exact repeat of a workflow"
+              },
+              {
+                      "query": "Which database does the analytics service use?",
+                      "expected_action": "replay",
+                      "notes": "Exact repeat of a fact"
+              },
+              {
+                      "query": "I forgot my password, what should I do?",
+                      "expected_action": "restore",
+                      "notes": "Paraphrase — reuse as context, not verbatim"
+              },
+              {
+                      "query": "How do we deploy the frontend to production?",
+                      "expected_action": "restore",
+                      "notes": "Adjacent question — the backend workflow is useful context"
+              },
+              {
+                      "query": "Which meeting room hosts the daily standup?",
+                      "expected_action": "restore",
+                      "notes": "Paraphrase of a stored fact"
+              },
+              {
+                      "query": "Where do I submit a vacation request?",
+                      "expected_action": "restore",
+                      "notes": "Paraphrase of the vacation workflow"
+              },
+              {
+                      "query": "What is the API rate limit?",
+                      "expected_action": "verify",
+                      "notes": "Exact repeat, but the memory is flagged requires_verification"
+              },
+              {
+                      "query": "Is the refund policy still 30 days?",
+                      "expected_action": "verify",
+                      "notes": "Freshness-sensitive fact"
+              },
+              {
+                      "query": "Does the platform support two-factor authentication for admin accounts?",
+                      "expected_action": "none",
+                      "notes": "TRAP: shares only 'support' with the payment-methods memory; naive retrieval replays the wrong answer"
+              },
+              {
+                      "query": "What key ingredients go into the team offsite planning?",
+                      "expected_action": "none",
+                      "notes": "TRAP: shares only 'key'/'team' with API-key and standup memories"
+              },
+              {
+                      "query": "What's the weather forecast for Tokyo this weekend?",
+                      "expected_action": "none",
+                      "notes": "Fully unrelated"
+              },
+              {
+                      "query": "Recommend a good espresso machine under 200 dollars",
+                      "expected_action": "none",
+                      "notes": "Fully unrelated"
+              },
+              {
+                      "query": "What is the escalation path if a customer complains about a refund on Twitter?",
+                      "expected_action": "none",
+                      "notes": "TRAP: shares 'escalation' with the on-call policy and 'refund' with the billing policy, but asks about neither"
+              },
+              {
+                      "query": "How do I invite a friend to use the espresso machine discount code?",
+                      "expected_action": "none",
+                      "notes": "TRAP: shares 'invite' with the team-invite workflow but is unrelated (and nonsensical) — should not restore"
+              },
+              {
+                      "query": "Who do we page first when something breaks in production?",
+                      "expected_action": "restore",
+                      "notes": "Paraphrase of the on-call escalation policy, no exact word overlap on the key terms"
+              },
+              {
+                      "query": "What roles can I assign when adding someone to the org?",
+                      "expected_action": "restore",
+                      "notes": "Paraphrase of the team-invite workflow, focuses on a sub-detail (roles) not the main verb"
+              },
+              {
+                      "query": "Is the on-call escalation window still 15 minutes?",
+                      "expected_action": "verify",
+                      "notes": "Freshness-sensitive follow-up (\"still X?\") on a policy fact — mirrors the existing refund-policy verify case, which triggers on freshness phrasing even without requires_verification set"
+              }
+        ]
+    }
+    
+            },
     {
       "query": "What payment methods do you support?",
       "response": "We accept Visa, Mastercard, and PayPal.",
