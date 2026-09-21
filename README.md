@@ -7,6 +7,8 @@
 
 **Persistent semantic memory for AI agents with intelligent decision-making.**
 
+![Agent Memory demo: exact query replays, a shared-word trap query correctly returns none with a full score breakdown](docs/assets/demo.gif)
+
 > **🚀 Created by:** [TheProdSDE](https://github.com/TheProdSDE)
 
 ---
@@ -665,3 +667,5 @@ This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) 
 > **Replay → Restore → Verify → Ignore**
 
 > **Built with ❤️ by [TheProdSDE](https://github.com/TheProdSDE)**
+
+mcp-name: io.github.theprodsde/agent-memory

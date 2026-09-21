@@ -30,6 +30,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tests (`tests/test_semantic_sqlite.py`). 119 tests total.
 - `mcp_server.reset_memory()` and lazy env reads for testability.
 - CONTRIBUTING.md with good-first-issues; docs/why-decision-layer.md.
+- README demo GIF (regenerate via `docs/assets/record-demo.sh`).
+- MCP Registry manifest (`server.json`, validated against the 2025-09-29
+  schema) plus an `agent-memory-sdk` console-script alias so
+  `uvx agent-memory-sdk` launches the MCP server; `mcp-name` ownership
+  marker in the README. See docs/launch-checklist.md.
 
 ### Changed (v0.2 batch)
 - `consolidate()` now issues one search per entry instead of one per pair

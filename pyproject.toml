@@ -62,6 +62,9 @@ dev = [
 [project.scripts]
 agent-memory = "agent_memory.cli:main"
 agent-memory-mcp = "mcp_server.server:main"
+# Alias matching the PyPI package name so `uvx agent-memory-sdk` starts the
+# MCP server directly (the MCP registry's default launch convention).
+agent-memory-sdk = "mcp_server.server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["agent_memory", "mcp_server"]
