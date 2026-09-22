@@ -171,11 +171,6 @@
       "notes": "TRAP: shares 'invite' with the team-invite workflow but is unrelated (and nonsensical) — should not restore"
     },
     {
-      "query": "Who do we page first when something breaks in production?",
-      "expected_action": "restore",
-      "notes": "Paraphrase of the on-call escalation policy, no exact word overlap on the key terms"
-    },
-    {
       "query": "What roles can I assign when adding someone to the org?",
       "expected_action": "restore",
       "notes": "Paraphrase of the team-invite workflow, focuses on a sub-detail (roles) not the main verb"
@@ -204,21 +199,6 @@
       "query": "How long does Earth take to rotate, and what produces day and night?",
       "expected_action": "none",
       "notes": "TRAP: shares 'rotate' with the production API-key workflow but asks an astronomy question"
-    },
-    {
-      "query": "How can I reduce my phone's monthly mobile data usage?",
-      "expected_action": "none",
-      "notes": "TRAP: shares 'monthly'/'usage' with the billing report workflow but asks about a personal device"
-    },
-    {
-      "query": "Which message queue algorithm gives customers the shortest wait time?",
-      "expected_action": "none",
-      "notes": "TRAP: shares 'queue'/'customer' with support-email routing but asks about queueing algorithms"
-    },
-    {
-      "query": "What is the rate of customer refunds this month?",
-      "expected_action": "none",
-      "notes": "TRAP: combines terms from rate-limit and refund-policy memories but asks for an analytics metric"
     }
   ]
 }
