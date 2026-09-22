@@ -6,107 +6,74 @@
       "query": "How do I reset my password?",
       "response": "Go to Settings → Security → Reset Password and follow the email link.",
       "type": "conversation",
-      "tags": [
-        "auth",
-        "faq"
-      ]
+      "tags": ["auth", "faq"]
     },
     {
       "query": "What payment methods do you support?",
       "response": "We accept Visa, Mastercard, and PayPal.",
       "type": "conversation",
-      "tags": [
-        "billing"
-      ]
+      "tags": ["billing"]
     },
     {
       "query": "What is the API rate limit?",
       "response": "1000 requests/minute per API key.",
       "type": "fact",
-      "tags": [
-        "api",
-        "limits"
-      ],
+      "tags": ["api", "limits"],
       "requires_verification": true
     },
     {
       "query": "How do we deploy the backend to production?",
       "response": "Merge to main, tag a release, and CI deploys automatically.",
       "type": "workflow",
-      "tags": [
-        "deploy",
-        "ci"
-      ]
+      "tags": ["deploy", "ci"]
     },
     {
       "query": "Where is the standup meeting held?",
       "response": "Zoom room 4, daily at 9:30am.",
       "type": "fact",
-      "tags": [
-        "team"
-      ]
+      "tags": ["team"]
     },
     {
       "query": "How do I request vacation days?",
       "response": "Submit the request in Workday; your manager approves it.",
       "type": "workflow",
-      "tags": [
-        "hr"
-      ]
+      "tags": ["hr"]
     },
     {
       "query": "What is the customer refund policy?",
       "response": "Full refunds within 30 days of purchase, contact support with the order ID.",
       "type": "fact",
-      "tags": [
-        "billing",
-        "policy"
-      ]
+      "tags": ["billing", "policy"]
     },
     {
       "query": "Which database does the analytics service use?",
       "response": "ClickHouse, on the analytics-prod cluster.",
       "type": "fact",
-      "tags": [
-        "analytics",
-        "infra"
-      ]
+      "tags": ["analytics", "infra"]
     },
     {
       "query": "How do I generate an API key?",
       "response": "Dashboard → Developer → Create key, then store it in your secrets manager.",
       "type": "workflow",
-      "tags": [
-        "api",
-        "auth"
-      ]
+      "tags": ["api", "auth"]
     },
     {
       "query": "What is our error budget policy?",
       "response": "Freeze non-critical deploys when budget burn exceeds 2x for the month.",
       "type": "fact",
-      "tags": [
-        "sre",
-        "policy"
-      ]
+      "tags": ["sre", "policy"]
     },
     {
       "query": "What is the on-call escalation policy?",
       "response": "Page the primary on-call via PagerDuty; escalate to secondary after 15 minutes of no ack.",
       "type": "workflow",
-      "tags": [
-        "sre",
-        "oncall"
-      ]
+      "tags": ["sre", "oncall"]
     },
     {
       "query": "How do I invite a new team member to the org?",
       "response": "Admin panel → Team → Invite, then assign a role from the dropdown.",
       "type": "workflow",
-      "tags": [
-        "admin",
-        "team"
-      ]
+      "tags": ["admin", "team"]
     }
   ],
   "cases": [
